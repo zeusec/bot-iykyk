@@ -1,0 +1,5 @@
+secret.py
+log.txt
+stocks.json
+venv/
+__pycache__/
