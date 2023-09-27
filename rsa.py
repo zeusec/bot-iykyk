@@ -6,7 +6,7 @@ import re
 from interactions import Client, OptionType, slash_command, SlashContext, Embed, EmbedField, EmbedAuthor
 from datetime import datetime, date
 from typing import Optional
-from secret import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
+from secrets import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
 
 TAGS = ["CIL", "ROUNDED", "PENDING"]
 BROKERS = ["Fidelity", "Merrill Edge", "Robinhood", "Schwab", "Tastyworks", 
@@ -67,13 +67,21 @@ def write_json_data(key, data):
     with open(JSON_FILE, 'w') as file:
         json.dump(full_data, file, indent=4)
 
-with open(JSON_FILE, 'r') as file:
-    try:
-        json.load(file)
-    except json.JSONDecodeError:
-        with open(JSON_FILE, 'w') as file:
-            json.dump({"rsa": [], "research": [], "past": []}, file, indent=4)
-            logging.info("Blank JSON initialized.")
+def write_stocks_json():
+    with open(JSON_FILE, 'w') as file:
+        json.dump({"rsa": [], "research": [], "past": []}, file, indent=4)
+        logging.info("Blank JSON initialized.")
+        
+try:
+    with open(JSON_FILE, 'r') as file:
+        try:
+            json.load(file)
+        except json.JSONDecodeError:
+            write_stocks_json()
+except FileNotFoundError:
+    write_stocks_json()
+    
+            
 
 # Price lookup
 def get_current_price(ticker):
