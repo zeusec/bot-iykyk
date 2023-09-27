@@ -629,8 +629,8 @@ async def brokers(ctx: SlashContext, ticker: str, broker: str, status: int):
                         continue
                     stock["BrokerTracking"][broker_to_update] = status
                 write_json_data("rsa" if data is rsa_data else "past", data)
-                status_text = "Available" if status == 1 else "Unavailable"
-                await ctx.send(f"${ticker} is now sellable on {', '.join(brokers_to_update)}!\nThank you {ctx.member.display_name} for contributing, have a :cookie:", ephemeral=False)
+                status_text = "available" if status == 1 else "unavailable"
+                await ctx.send(f"${ticker} is {status_text} to sell on {', '.join(brokers_to_update)}!\nThank you {ctx.member.display_name} for contributing, have a :cookie:", ephemeral=False)
                 return
 
     await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
