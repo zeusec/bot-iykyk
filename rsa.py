@@ -40,8 +40,8 @@ EXCH_CODES = {
     'Z': 'BATS'
 }
 
-EMOJI_REDUDE = '<:9reddude:1126978459940433920>'
-EMOJI_GRDUDE = '<:9greendude:1126978105085546526>'
+EMOJI_REDUDE = ':9reddude:'
+EMOJI_GRDUDE = ':9greendude'
 
 bot = Client(token=DISCORD_TOKEN)
 JSON_FILE = "stocks.json"
@@ -245,7 +245,7 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
 async def list_stocks(ctx: SlashContext):
     stock_data = read_json_data("rsa")
     if not stock_data:
-        await ctx.send(f"Nothing {EMOJI_REDUDE}")
+        await ctx.send("Nothing {}".format(EMOJI_REDUDE))
         logging.info("Today's RSA Bulletin: No stocks found. Requested by {ctx.member.display_name}.")
         return
     today = date.today()
@@ -256,7 +256,7 @@ async def list_stocks(ctx: SlashContext):
             filtered_stocks.append(stock)
             
     if not filtered_stocks:
-        await ctx.send(f"Nothing {EMOJI_REDUDE}")
+        await ctx.send("Nothing {}".format(EMOJI_REDUDE))
         logging.info("Today's RSA Bulletin: No RSAs yet. Requested by {ctx.member.display_name}.")
         return
         
@@ -303,7 +303,7 @@ async def list_stocks(ctx: SlashContext):
 async def list_upcoming_stocks(ctx: SlashContext):
     stock_data = read_json_data("rsa")
     if not stock_data:
-        await ctx.send("Nothing {EMOJI_REDUDE}")
+        await ctx.send("Nothing {}".format(EMOJI_REDUDE))
         logging.info("Upcoming RSA Bulletin: No RSAs found. Requested by {ctx.member.display_name}.")
         return
 
