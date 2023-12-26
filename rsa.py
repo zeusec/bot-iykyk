@@ -275,6 +275,7 @@ async def list_stocks(ctx: SlashContext):
             company_name = get_company_name(stock['Ticker'])
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             ta_name = f"TA is {stock['Transfer Agent']}" if stock.get('Transfer Agent') else "TA not listed"
+            comment = stock['Comments'][:253] + "..." if len(stock['Comments']) > 256 else stock['Comments']
             post_text = f"{ticker_name}\nSplit: {stock['Split Ratio']}\nPrice: ${stock['Current Price']}\nProfit: ${stock['Estimated Profit']}\n{stock['Comments'] if stock['Comments'] else 'No comments'}\n{stock['Transfer Agent'] if stock['Transfer Agent'] else 'TA not listed'}\n[Source]({stock['Source']})"
             character_count = len(post_text)
             logging.info(f"Character count: {character_count}")
@@ -287,7 +288,7 @@ async def list_stocks(ctx: SlashContext):
             embed.add_field(name="Split", value=f"\u200b{stock['Split Ratio']}", inline=True)
             embed.add_field(name="Price", value=f"\u200b${stock['Current Price']}", inline=True)
             embed.add_field(name="Profit", value=f"\u200b${stock['Estimated Profit']}", inline=True)
-            embed.add_field(name=stock['Comments'] if stock['Comments'] else 'Get that bread :money_mouth:', value=f"{ta_name}\n[Source]({stock['Source']})", inline=False)
+            embed.add_field(name=comment if stock['Comments'] else 'Get that bread :money_mouth:', value=f"{ta_name}\n[Source]({stock['Source']})", inline=False)
 
         logging.info(f"Sending Today's RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed)
