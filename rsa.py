@@ -99,6 +99,12 @@ except FileNotFoundError:
 def truncate(text, limit):
     return text[:limit - 3] + "..." if len(text) > limit else text
 
+# Markdown link for real URLs, plain text otherwise ([Source](TEST) renders literally in Discord)
+def format_source(source):
+    if source and str(source).startswith(("http://", "https://")):
+        return f"[Source]({source})"
+    return f"Source: {source}" if source else ""
+
 # Price lookup
 def get_current_price(ticker):
     url = f"https://api.tradier.com/v1/markets/quotes?symbols={ticker}"
@@ -265,7 +271,7 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
         embed.add_field(name="Date of Split", value=f"`{found_stock['Date']}`", inline=False)
         embed.add_field(name="Estimated Profit", value=f"`{estimated_profit}`", inline=False)
         embed.add_field(name="Shares Availability", value=broker_list, inline=False)
-        embed.add_field(name=truncate(found_stock['Comments'], 256) if found_stock['Comments'] else 'Get that bread :money_mouth:', value=truncate(f"[Source]({found_stock['Source']})", 1024), inline=False)
+        embed.add_field(name=truncate(found_stock['Comments'], 256) if found_stock['Comments'] else 'Get that bread :money_mouth:', value=truncate(format_source(found_stock['Source']) or 'No source', 1024), inline=False)
 
         await ctx.send(embed=embed, ephemeral=True)
         logging.info(f"RSA '{ticker}' found and sent to Discord. Requested by {ctx.member.display_name}.")
@@ -314,12 +320,13 @@ async def list_stocks(ctx: SlashContext):
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             ta_name = f"TA is {stock['Transfer Agent']}" if stock.get('Transfer Agent') else "TA not listed"
             comment = truncate(stock['Comments'], 256) if stock['Comments'] else 'Get that bread :money_mouth:'
+            source_text = format_source(stock['Source'])
 
             embed.add_field(name="\u200b", value=ticker_name, inline=False)
             embed.add_field(name="Split", value=f"\u200b{stock['Split Ratio']}", inline=True)
             embed.add_field(name="Price", value=f"\u200b${stock['Current Price']}", inline=True)
             embed.add_field(name="Profit", value=f"\u200b${stock['Estimated Profit']}", inline=True)
-            embed.add_field(name=comment, value=truncate(f"{ta_name}\n[Source]({stock['Source']})", 1024), inline=False)
+            embed.add_field(name=comment, value=truncate(f"{ta_name}\n{source_text}" if source_text else ta_name, 1024), inline=False)
 
         logging.info(f"Sending Today's RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed)
@@ -348,7 +355,9 @@ async def send_bulletin(ctx: SlashContext, stock_data, title, color):
             post_text = f"{ticker_name}\nSplit: {stock['Split Ratio']}\nPrice: ${stock['Current Price']}\nEstimated Profit: ${stock['Estimated Profit']}\nDate: {stock['Date']}\nTransfer Agent: {stock['Transfer Agent'] if stock['Transfer Agent'] else 'TA not listed'}"
             if stock['Comments']:
                 post_text += f"\n{truncate(stock['Comments'], 256)}"
-            post_text += f"\n[Source]({stock['Source']})"
+            source_text = format_source(stock['Source'])
+            if source_text:
+                post_text += f"\n{source_text}"
             embed.add_field(name="\u200b", value=truncate(post_text, 1024), inline=False)
 
         logging.info(f"Sending {title} - Page {embed_number + 1}/{total_embeds}")
