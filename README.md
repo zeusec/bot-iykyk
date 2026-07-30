@@ -7,13 +7,17 @@ All data is stored in `stocks.json`. This is private data and not included in th
 
 ## 🧑🏻‍💻 Usage
 - `/today` Lists any plays for today.
-- `/upcoming` List any upcoming plays
+- `/upcoming` List any upcoming plays (today and future dates only)
+- `/old` Lists plays past their split date that still need a `/confirm`
 - `/rsa` Search past stocks
 - `/new` Adds a new stock to the list
 - `/edit` Edit a stock in the database
 - `/brokers` Allows people to report when shares are available for past RSAs
 - `/confirm` Allows you to confirm if an RSA rounded or went CIL. This also removes it from the RSA Bulletin and moves it to the 'past' list.
-- `/delete` Used to delete a stock from the DB. This is mainly used for mistakes, as we want to track past RSAs.
+- `/export` Export every RSA to date as a CSV, with optional start/end date filtering. Only visible to the requester.
+- `/delete` Used to delete a stock from the DB. This is for mistakes only and asks for confirmation before deleting — use `/confirm` to clear finished plays.
+
+Anything left unconfirmed for more than a week past its split date is automatically archived to the past list, so the bulletin cleans itself — no data is ever deleted. Commands only work in servers, not DMs. The bot reconnects on its own if Discord is unreachable.
 
 ## 🛠️ Installation    
 
@@ -41,7 +45,6 @@ Paste the following and fill:
 ```bash
 DISCORD_TOKEN = ''
 TRADIER_API_KEY = ''
-DISCORD_GUILD = []
 DISCORD_CHANN = []
 ```
 
