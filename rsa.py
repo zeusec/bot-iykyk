@@ -116,12 +116,13 @@ def get_current_price(ticker):
         data = response.json()
         quote = data.get('quotes', {}).get('quote')
         if quote:
-            return quote.get('last')
+            last = quote.get('last')
+            return float(last) if last is not None else None
         raise KeyError("The response data did not contain the expected fields.")
     except requests.RequestException as e:
         logging.error(f"Price not found for {ticker}: {e}")
         return None
-    except KeyError as e:
+    except (KeyError, ValueError, TypeError) as e:
         logging.error(f"The response data did not contain the expected fields: {e}")
         return None
 
@@ -293,6 +294,8 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
     dm_permission=False
 )
 async def list_stocks(ctx: SlashContext):
+    if not (ctx.deferred or ctx.responded):
+        await ctx.defer()
     stock_data = read_json_data("rsa")
     if not stock_data:
         await ctx.send(f"Nothing {EMOJI_REDUDE}")
@@ -379,6 +382,7 @@ async def send_bulletin(ctx: SlashContext, stock_data, title, color):
     dm_permission=False
 )
 async def list_upcoming_stocks(ctx: SlashContext):
+    await ctx.defer(ephemeral=True)
     stock_data = read_json_data("rsa")
     today = date.today()
     stock_data = [stock for stock in stock_data if datetime.strptime(stock['Date'], "%m-%d-%Y").date() >= today]
@@ -397,6 +401,7 @@ async def list_upcoming_stocks(ctx: SlashContext):
     dm_permission=False
 )
 async def list_old_stocks(ctx: SlashContext):
+    await ctx.defer(ephemeral=True)
     stock_data = read_json_data("rsa")
     today = date.today()
     stock_data = [stock for stock in stock_data if datetime.strptime(stock['Date'], "%m-%d-%Y").date() < today]
