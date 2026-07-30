@@ -6,12 +6,12 @@ import re
 import time
 import os
 import contextlib
-from interactions import Client, OptionType, slash_command, SlashContext, Embed, EmbedField, EmbedAuthor, listen
+from interactions import Client, OptionType, slash_command, SlashContext, Embed, listen
 from interactions.api.events import Startup
 from interactions.client.errors import LoginError
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
-from config import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
+from config import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_CHANN
 
 TAGS = ["CIL", "ROUNDED", "PENDING"]
 BROKERS = ["Fidelity", "Merrill Edge", "Robinhood", "Schwab", "Tastyworks", 
@@ -160,11 +160,34 @@ def calculate_estimated_profit(price: float, split_ratio: str) -> float:
     estimated_profit = round(price * split_ratio_num, 2)
     return estimated_profit
 
-# Refresh prices and profits every 2 minutes
+# Resolve a ticker to one record: the active "rsa" entry wins, else the newest "past" entry
+def find_stock(rsa_data, past_data, ticker):
+    for stock in rsa_data:
+        if stock['Ticker'].lower() == ticker.lower():
+            return stock, "rsa"
+    matches = [stock for stock in past_data if stock['Ticker'].lower() == ticker.lower()]
+    if matches:
+        return max(matches, key=lambda stock: datetime.strptime(stock['Date'], "%m-%d-%Y")), "past"
+    return None, None
+
+# Every 2 minutes: archive unconfirmed splits over a week old, then refresh prices and profits
 async def refresh_stock_data():
     while True:
         try:
-            tickers = [stock['Ticker'] for stock in read_json_data("rsa")]
+            rsa_data = read_json_data("rsa")
+            cutoff = date.today() - timedelta(days=7)
+            kept, expired = [], []
+            for stock in rsa_data:
+                if datetime.strptime(stock['Date'], "%m-%d-%Y").date() < cutoff:
+                    expired.append(stock)
+                else:
+                    kept.append(stock)
+            if expired:
+                past_data = read_json_data("past")
+                write_json_data("rsa", kept)
+                write_json_data("past", past_data + expired)
+                logging.info(f"Archived to past (over a week past split date): {', '.join(stock['Ticker'] for stock in expired)}")
+            tickers = [stock['Ticker'] for stock in kept]
             prices = {}
             for ticker in tickers:
                 price = await asyncio.to_thread(get_current_price, ticker)
@@ -192,6 +215,7 @@ async def start_price_refresh(event: Startup):
 @slash_command(
     name="rsa",
     description="Search a RSA",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -207,11 +231,7 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
     stock_data = full_data["rsa"]
     past_stock_data = full_data["past"]
 
-    found_stock = None
-    for stock in stock_data + past_stock_data:
-        if stock['Ticker'].lower() == ticker.lower():
-            found_stock = stock
-            break
+    found_stock, _ = find_stock(stock_data, past_stock_data, ticker)
 
     if found_stock:
         tag = found_stock['Tag'].upper()
@@ -255,13 +275,14 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
 # Todays bulletin
 @slash_command(
     name="today",
-    description="Today's RSA Bulletin"
+    description="Today's RSA Bulletin",
+    dm_permission=False
 )
 async def list_stocks(ctx: SlashContext):
     stock_data = read_json_data("rsa")
     if not stock_data:
         await ctx.send(f"Nothing {EMOJI_REDUDE}")
-        logging.info("Today's RSA Bulletin: No stocks found. Requested by {ctx.member.display_name}.")
+        logging.info(f"Today's RSA Bulletin: No stocks found. Requested by {ctx.member.display_name}.")
         return
     today = date.today()
     filtered_stocks = []
@@ -272,7 +293,7 @@ async def list_stocks(ctx: SlashContext):
             
     if not filtered_stocks:
         await ctx.send(f"Nothing {EMOJI_REDUDE}")
-        logging.info("Today's RSA Bulletin: No RSAs yet. Requested by {ctx.member.display_name}.")
+        logging.info(f"Today's RSA Bulletin: No RSAs yet. Requested by {ctx.member.display_name}.")
         return
         
     total_stocks = len(filtered_stocks)
@@ -301,21 +322,11 @@ async def list_stocks(ctx: SlashContext):
         logging.info(f"Sending Today's RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed)
 
-    logging.info("Today's RSA Bulletin sent successfully. Requested by {ctx.member.display_name}.")
+    logging.info(f"Today's RSA Bulletin sent successfully. Requested by {ctx.member.display_name}.")
 
 
-# Upcoming RSA
-@slash_command(
-    name="upcoming",
-    description="Upcoming RSA Bulletin"
-)
-async def list_upcoming_stocks(ctx: SlashContext):
-    stock_data = read_json_data("rsa")
-    if not stock_data:
-        await ctx.send("Nothing {EMOJI_REDUDE}")
-        logging.info("Upcoming RSA Bulletin: No RSAs found. Requested by {ctx.member.display_name}.")
-        return
-
+# Shared paginated renderer for /upcoming and /old
+async def send_bulletin(ctx: SlashContext, stock_data, title, color):
     total_stocks = len(stock_data)
     stocks_per_embed = 5
     total_embeds = (total_stocks + stocks_per_embed - 1) // stocks_per_embed
@@ -326,8 +337,8 @@ async def list_upcoming_stocks(ctx: SlashContext):
         end_index = min(start_index + stocks_per_embed, total_stocks)
         stocks_subset = sorted_stocks[start_index:end_index]
         embed = Embed(
-            title=f"Upcoming RSA Bulletin" + (f" - Page {embed_number + 1}/{total_embeds}" if total_embeds > 1 else ""),
-            color=0x3498db
+            title=title + (f" - Page {embed_number + 1}/{total_embeds}" if total_embeds > 1 else ""),
+            color=color
         )
         for stock in stocks_subset:
             company_name = await asyncio.to_thread(get_company_name, stock['Ticker'])
@@ -338,16 +349,53 @@ async def list_upcoming_stocks(ctx: SlashContext):
             post_text += f"\n[Source]({stock['Source']})"
             embed.add_field(name="\u200b", value=truncate(post_text, 1024), inline=False)
 
-        logging.info(f"Sending Upcoming RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
+        logging.info(f"Sending {title} - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed, ephemeral=True)
 
-    logging.info("Upcoming RSA Bulletin sent successfully. Requested by {ctx.member.display_name}.")
+    logging.info(f"{title} sent successfully. Requested by {ctx.member.display_name}.")
+
+
+# Upcoming RSA
+@slash_command(
+    name="upcoming",
+    description="Upcoming RSA Bulletin",
+    dm_permission=False
+)
+async def list_upcoming_stocks(ctx: SlashContext):
+    stock_data = read_json_data("rsa")
+    today = date.today()
+    stock_data = [stock for stock in stock_data if datetime.strptime(stock['Date'], "%m-%d-%Y").date() >= today]
+    if not stock_data:
+        await ctx.send(f"Nothing {EMOJI_REDUDE}")
+        logging.info(f"Upcoming RSA Bulletin: No RSAs found. Requested by {ctx.member.display_name}.")
+        return
+
+    await send_bulletin(ctx, stock_data, "Upcoming RSA Bulletin", 0x3498db)
+
+
+# Old RSA
+@slash_command(
+    name="old",
+    description="RSAs past their split date, awaiting /confirm",
+    dm_permission=False
+)
+async def list_old_stocks(ctx: SlashContext):
+    stock_data = read_json_data("rsa")
+    today = date.today()
+    stock_data = [stock for stock in stock_data if datetime.strptime(stock['Date'], "%m-%d-%Y").date() < today]
+    if not stock_data:
+        await ctx.send(f"Nothing {EMOJI_REDUDE}")
+        logging.info(f"Old RSA Bulletin: No RSAs found. Requested by {ctx.member.display_name}.")
+        return
+
+    await send_bulletin(ctx, stock_data, "Old RSA Bulletin", 0xe67e22)
 
 
 # New RSA
 @slash_command(
     name="new",
     description="Add a RSA",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -453,6 +501,7 @@ async def add_stock(ctx: SlashContext, ticker: str, split_ratio: str, source: st
 @slash_command(
     name="edit",
     description="Edit a RSA",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -534,59 +583,51 @@ async def edit_stock(ctx: SlashContext, ticker: str, split_ratio: str = None, da
 
     rsa_data = read_json_data("rsa")
     past_data = read_json_data("past")
-    all_data = rsa_data + past_data
 
-    for stock in all_data:
-        if stock['Ticker'].lower() == ticker.lower():
-            array_found_in = "rsa" if stock in rsa_data else "past"
+    stock, array_found_in = find_stock(rsa_data, past_data, ticker)
+    if stock is None:
+        logging.warning(f"RSA '{ticker}' not found. Requested by {ctx.member.display_name}.")
+        await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+        return
 
-            if split_ratio:
-                stock['Split Ratio'] = split_ratio
-                logging.info(f"Split ratio updated for RSA '{ticker}' to '{split_ratio}'. Requested by {ctx.member.display_name}.")
-            if date:
-                try:
-                    parsed_date = datetime.strptime(date, "%m-%d-%Y")
-                    formatted_date = parsed_date.strftime("%m-%d-%Y")
-                    stock['Date'] = formatted_date
-                    logging.info(f"Date updated for RSA '{ticker}' to '{formatted_date}'. Requested by {ctx.member.display_name}.")
-                except ValueError:
-                    await ctx.send("Invalid date format. Please use 'MM-DD-YYYY'.", ephemeral=True)
-                    return
-            if agent:
-                stock['Transfer Agent'] = agent
-                logging.info(f"Transfer Agent updated for RSA '{ticker}' to '{agent}'. Requested by {ctx.member.display_name}.")
-            if source:
-                stock['Source'] = source
-                logging.info(f"Source updated for RSA '{ticker}' to '{source}'. Requested by {ctx.member.display_name}.")
-            if comments:
-                stock['Comments'] = comments
-                logging.info(f"Comments updated for RSA '{ticker}' to '{comments}'. Requested by {ctx.member.display_name}.")
-            if tag:
-                stock['Tag'] = tag
-                logging.info(f"Status updated for RSA '{ticker}' to '{tag}'. Requested by {ctx.member.display_name}.")
+    if split_ratio:
+        stock['Split Ratio'] = split_ratio
+        logging.info(f"Split ratio updated for RSA '{ticker}' to '{split_ratio}'. Requested by {ctx.member.display_name}.")
+    if date:
+        stock['Date'] = date
+        logging.info(f"Date updated for RSA '{ticker}' to '{date}'. Requested by {ctx.member.display_name}.")
+    if agent:
+        stock['Transfer Agent'] = agent
+        logging.info(f"Transfer Agent updated for RSA '{ticker}' to '{agent}'. Requested by {ctx.member.display_name}.")
+    if source:
+        stock['Source'] = source
+        logging.info(f"Source updated for RSA '{ticker}' to '{source}'. Requested by {ctx.member.display_name}.")
+    if comments:
+        stock['Comments'] = comments
+        logging.info(f"Comments updated for RSA '{ticker}' to '{comments}'. Requested by {ctx.member.display_name}.")
+    if tag:
+        stock['Tag'] = tag
+        logging.info(f"Status updated for RSA '{ticker}' to '{tag}'. Requested by {ctx.member.display_name}.")
 
-            estimated_profit = calculate_estimated_profit(price, stock['Split Ratio'])
+    estimated_profit = calculate_estimated_profit(price, stock['Split Ratio'])
 
-            stock['Current Price'] = price
-            stock['Estimated Profit'] = estimated_profit
-            logging.info(f"Price and estimated profit updated for RSA '{ticker}'. Requested by {ctx.member.display_name}.")
-            
-            if array_found_in == "rsa":
-                write_json_data("rsa", rsa_data)
-            else:
-                write_json_data("past", past_data)
+    stock['Current Price'] = price
+    stock['Estimated Profit'] = estimated_profit
+    logging.info(f"Price and estimated profit updated for RSA '{ticker}'. Requested by {ctx.member.display_name}.")
 
-            await ctx.send(f"Stock '{ticker}' updated successfully.", ephemeral=True)
-            return
+    if array_found_in == "rsa":
+        write_json_data("rsa", rsa_data)
+    else:
+        write_json_data("past", past_data)
 
-    logging.warning(f"RSA '{ticker}' not found. Requested by {ctx.member.display_name}.")
-    await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+    await ctx.send(f"Stock '{ticker}' updated successfully.", ephemeral=True)
 
 
 # Brokers
 @slash_command(
     name="brokers",
     description="Track sellable shares across brokers",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -620,28 +661,27 @@ async def brokers(ctx: SlashContext, ticker: str, broker: str, status: int):
     
     brokers_to_update = DAILY_BROKERS if broker == "DAILY" else [broker]
 
-    for data in [rsa_data, past_data]:
-        for stock in data:
-            if stock["Ticker"].upper() == ticker:
-                for broker_to_update in brokers_to_update:
-                    if broker_to_update not in stock["BrokerTracking"]:
-                        continue
-                    if stock["BrokerTracking"][broker_to_update] == status:
-                        status_text = "Available" if status == 1 else "Unavailable"
-                        continue
-                    stock["BrokerTracking"][broker_to_update] = status
-                write_json_data("rsa" if data is rsa_data else "past", data)
-                status_text = "available" if status == 1 else "unavailable"
-                await ctx.send(f"${ticker} is {status_text} to sell on {', '.join(brokers_to_update)}!\nThank you {ctx.member.display_name} for contributing, have a :cookie:", ephemeral=False)
-                return
+    stock, array_found_in = find_stock(rsa_data, past_data, ticker)
+    if stock is None:
+        await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+        return
 
-    await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+    for broker_to_update in brokers_to_update:
+        if broker_to_update not in stock["BrokerTracking"]:
+            continue
+        if stock["BrokerTracking"][broker_to_update] == status:
+            continue
+        stock["BrokerTracking"][broker_to_update] = status
+    write_json_data(array_found_in, rsa_data if array_found_in == "rsa" else past_data)
+    status_text = "available" if status == 1 else "unavailable"
+    await ctx.send(f"${ticker} is {status_text} to sell on {', '.join(brokers_to_update)}!\nThank you {ctx.member.display_name} for contributing, have a :cookie:", ephemeral=False)
 
 
 # Confirm RSA
 @slash_command(
     name="confirm",
     description="Confirm whether an RSA was ROUNDED or CIL. Choose PENDING to move to the RSA Bulletin.",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -686,6 +726,7 @@ async def confirm_stock(ctx: SlashContext, ticker: str, tag: str):
 @slash_command(
     name="delete",
     description="Delete RSA from the database",
+    dm_permission=False,
     options=[
         {
             "name": "ticker",
@@ -697,25 +738,23 @@ async def confirm_stock(ctx: SlashContext, ticker: str, tag: str):
 )
 async def delete_stock(ctx: SlashContext, ticker: str):
     try:
-        stock_data = read_json_data("rsa")
-        past_stock_data = read_json_data("past")
-        research_stock_data = read_json_data("research")
-        stock_found = False
+        rsa_data = read_json_data("rsa")
+        past_data = read_json_data("past")
 
-        def delete_stock_from_array(stock_array):
-            for i, stock in enumerate(stock_array):
-                if stock['Ticker'].lower() == ticker.lower():
-                    stock_array.pop(i)
-                    return True
-            return False
-
-        stock_found |= delete_stock_from_array(stock_data)
-        stock_found |= delete_stock_from_array(past_stock_data)
-        stock_found |= delete_stock_from_array(research_stock_data)
-
-        write_json_data("rsa", stock_data)
-        write_json_data("past", past_stock_data)
-        write_json_data("research", research_stock_data)
+        stock, array_found_in = find_stock(rsa_data, past_data, ticker)
+        stock_found = stock is not None
+        if stock_found:
+            data = rsa_data if array_found_in == "rsa" else past_data
+            data.remove(stock)
+            write_json_data(array_found_in, data)
+        else:
+            research_data = read_json_data("research")
+            for i, research_stock in enumerate(research_data):
+                if research_stock['Ticker'].lower() == ticker.lower():
+                    research_data.pop(i)
+                    write_json_data("research", research_data)
+                    stock_found = True
+                    break
 
         if stock_found:
             logging.info(f"RSA '{ticker}' deleted successfully. Requested by {ctx.member.display_name}.")
