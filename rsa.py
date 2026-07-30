@@ -12,6 +12,7 @@ from interactions import Client, OptionType, slash_command, SlashContext, Embed,
 from interactions.api.events import Startup
 from interactions.client.errors import LoginError
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from typing import Optional
 from config import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_CHANN
 
@@ -178,7 +179,12 @@ def find_stock(rsa_data, past_data, ticker):
         return max(matches, key=lambda stock: datetime.strptime(stock['Date'], "%m-%d-%Y")), "past"
     return None, None
 
-# Every 2 minutes: archive unconfirmed splits over a week old, then refresh prices and profits
+# Regular market hours, 9:30-16:00 ET weekdays
+def market_is_open():
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return now.weekday() < 5 and (9, 30) <= (now.hour, now.minute) < (16, 0)
+
+# Hourly: archive unconfirmed splits over a week old, then refresh prices during market hours
 async def refresh_stock_data():
     while True:
         try:
@@ -195,22 +201,22 @@ async def refresh_stock_data():
                 write_json_data("rsa", kept)
                 write_json_data("past", past_data + expired)
                 logging.info(f"Archived to past (over a week past split date): {', '.join(stock['Ticker'] for stock in expired)}")
-            tickers = [stock['Ticker'] for stock in kept]
-            prices = {}
-            for ticker in tickers:
-                price = await asyncio.to_thread(get_current_price, ticker)
-                if price is not None:
-                    prices[ticker] = round(price, 2)
-            if prices:
-                stock_data = read_json_data("rsa")
-                for stock in stock_data:
-                    if stock['Ticker'] in prices:
-                        stock['Current Price'] = prices[stock['Ticker']]
-                        stock['Estimated Profit'] = calculate_estimated_profit(prices[stock['Ticker']], stock['Split Ratio'])
-                write_json_data("rsa", stock_data)
+            if market_is_open():
+                prices = {}
+                for ticker in [stock['Ticker'] for stock in kept]:
+                    price = await asyncio.to_thread(get_current_price, ticker)
+                    if price is not None:
+                        prices[ticker] = round(price, 2)
+                if prices:
+                    stock_data = read_json_data("rsa")
+                    for stock in stock_data:
+                        if stock['Ticker'] in prices:
+                            stock['Current Price'] = prices[stock['Ticker']]
+                            stock['Estimated Profit'] = calculate_estimated_profit(prices[stock['Ticker']], stock['Split Ratio'])
+                    write_json_data("rsa", stock_data)
         except Exception:
             logging.error("Price refresh cycle failed.", exc_info=True)
-        await asyncio.sleep(120)
+        await asyncio.sleep(3600)
 
 refresh_task = None
 
