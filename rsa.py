@@ -4,8 +4,10 @@ import json
 import asyncio
 import re
 import time
+import os
 import contextlib
-from interactions import Client, OptionType, slash_command, SlashContext, Embed, EmbedField, EmbedAuthor
+from interactions import Client, OptionType, slash_command, SlashContext, Embed, EmbedField, EmbedAuthor, listen
+from interactions.api.events import Startup
 from interactions.client.errors import LoginError
 from datetime import datetime, date
 from typing import Optional
@@ -66,8 +68,11 @@ def write_json_data(key, data):
     with open(JSON_FILE, 'r') as file:
         full_data = json.load(file)
     full_data[key] = data
-    with open(JSON_FILE, 'w') as file:
+    with open(JSON_FILE + '.tmp', 'w') as file:
         json.dump(full_data, file, indent=4)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(JSON_FILE + '.tmp', JSON_FILE)
 
 def write_stocks_json():
     with open(JSON_FILE, 'w') as file:
@@ -79,6 +84,9 @@ try:
         try:
             json.load(file)
         except json.JSONDecodeError:
+            backup = f"{JSON_FILE}.corrupt.{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            os.replace(JSON_FILE, backup)
+            logging.error(f"{JSON_FILE} is corrupt. Saved it to {backup} and re-initializing.")
             write_stocks_json()
 except FileNotFoundError:
     write_stocks_json()
@@ -90,26 +98,26 @@ def get_current_price(ticker):
     url = f"https://api.tradier.com/v1/markets/quotes?symbols={ticker}"
     headers = {"Authorization": f"Bearer {TRADIER_API_KEY}", "Accept": "application/json"}
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         data = response.json()
         quote = data.get('quotes', {}).get('quote')
         if quote:
-            return quote.get('last', 'null')
+            return quote.get('last')
         raise KeyError("The response data did not contain the expected fields.")
     except requests.RequestException as e:
         logging.error(f"Price not found for {ticker}: {e}")
-        return 'null'
+        return None
     except KeyError as e:
         logging.error(f"The response data did not contain the expected fields: {e}")
-        return 'null'
+        return None
 
 # Ticker lookup
 def get_company_name(ticker):
     url = f"https://api.tradier.com/v1/markets/lookup?q={ticker}"
     headers = {"Authorization": f"Bearer {TRADIER_API_KEY}", "Accept": "application/json"}
     try:
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=10)
         response.raise_for_status()
         logging.info(f"Successfully received a response for {ticker}. Status Code: {response.status_code}")
         
@@ -142,38 +150,39 @@ def get_company_name(ticker):
         logging.error(f"The response data did not contain the expected fields: {e}")
         return 'null'
 
-# Update prices
-async def update_stock_prices():
-    while True:
-        stock_data = read_json_data("rsa")
-        for stock in stock_data:
-            ticker = stock['Ticker']
-            price = get_current_price(ticker)
-            if price is not None:
-                stock['Current Price'] = price
-        write_json_data("rsa", stock_data)
-        await asyncio.sleep(120)
-
 # Calculate profit
 def calculate_estimated_profit(price: float, split_ratio: str) -> float:
     split_ratio_num = float(split_ratio.split(":")[1]) - 1
     estimated_profit = round(price * split_ratio_num, 2)
     return estimated_profit
 
-# Auto updates profit
-async def auto_estimated_profit():
+# Refresh prices and profits every 2 minutes
+async def refresh_stock_data():
     while True:
-        stock_data = read_json_data("rsa")
-        for stock in stock_data:
-            ticker = stock['Ticker']
-            price = get_current_price(ticker)
-            if price is not None:
-                split_ratio = stock['Split Ratio']
-                split_ratio_num = float(split_ratio.split(":")[1]) - 1
-                estimated_profit = round(price * split_ratio_num, 2)
-                stock['Estimated Profit'] = estimated_profit
-        write_json_data("rsa", stock_data)
-        await asyncio.sleep(180)
+        try:
+            tickers = [stock['Ticker'] for stock in read_json_data("rsa")]
+            prices = {}
+            for ticker in tickers:
+                price = await asyncio.to_thread(get_current_price, ticker)
+                if price is not None:
+                    prices[ticker] = round(price, 2)
+            if prices:
+                stock_data = read_json_data("rsa")
+                for stock in stock_data:
+                    if stock['Ticker'] in prices:
+                        stock['Current Price'] = prices[stock['Ticker']]
+                        stock['Estimated Profit'] = calculate_estimated_profit(prices[stock['Ticker']], stock['Split Ratio'])
+                write_json_data("rsa", stock_data)
+        except Exception:
+            logging.error("Price refresh cycle failed.", exc_info=True)
+        await asyncio.sleep(120)
+
+refresh_task = None
+
+@listen(Startup)
+async def start_price_refresh(event: Startup):
+    global refresh_task
+    refresh_task = asyncio.create_task(refresh_stock_data())
 
 # Search RSA
 @slash_command(
@@ -274,7 +283,7 @@ async def list_stocks(ctx: SlashContext):
             color=0x35e20d
         )
         for stock in stocks_subset:
-            company_name = get_company_name(stock['Ticker'])
+            company_name = await asyncio.to_thread(get_company_name, stock['Ticker'])
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             ta_name = f"TA is {stock['Transfer Agent']}" if stock.get('Transfer Agent') else "TA not listed"
             comment = stock['Comments'][:253] + "..." if len(stock['Comments']) > 256 else stock['Comments']
@@ -324,7 +333,7 @@ async def list_upcoming_stocks(ctx: SlashContext):
             color=0x3498db
         )
         for stock in stocks_subset:
-            company_name = get_company_name(stock['Ticker'])
+            company_name = await asyncio.to_thread(get_company_name, stock['Ticker'])
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             post_text = f"{ticker_name}\nSplit: {stock['Split Ratio']}\nPrice: ${stock['Current Price']}\nEstimated Profit: ${stock['Estimated Profit']}\nDate: {stock['Date']}\nTransfer Agent: {stock['Transfer Agent'] if stock['Transfer Agent'] else 'TA not listed'}"
             if stock['Comments']:
@@ -405,17 +414,17 @@ async def add_stock(ctx: SlashContext, ticker: str, split_ratio: str, source: st
             return
 
     ticker = ticker.upper()
-    stock_data = read_json_data("rsa")
-
-    if any(stock["Ticker"].upper() == ticker for stock in stock_data):
-        await ctx.send(f"RSA '{ticker}' already exists.", ephemeral=True)
-        return
-    
-    price = get_current_price(ticker)
+    price = await asyncio.to_thread(get_current_price, ticker)
     if price is not None:
         price = round(price, 2)
     else:
         await ctx.send(f"Failed to fetch price for the ticker: {ticker}. Please try again.", ephemeral=True)
+        return
+
+    stock_data = read_json_data("rsa")
+
+    if any(stock["Ticker"].upper() == ticker for stock in stock_data):
+        await ctx.send(f"RSA '{ticker}' already exists.", ephemeral=True)
         return
 
     estimated_profit = calculate_estimated_profit(price, split_ratio)
@@ -435,8 +444,6 @@ async def add_stock(ctx: SlashContext, ticker: str, split_ratio: str, source: st
 
     stock_data.append(new_stock)
     write_json_data("rsa", stock_data)
-    if not asyncio.get_event_loop().is_running():
-        asyncio.get_event_loop().create_task(update_stock_prices())
 
     logging.info(f"RSA '{ticker}' added successfully. Requested by {ctx.member.display_name}.")
     date_datetime = datetime.strptime(date, "%m-%d-%Y")
@@ -517,23 +524,28 @@ async def add_stock(ctx: SlashContext, ticker: str, split_ratio: str, source: st
     ]
 )
 async def edit_stock(ctx: SlashContext, ticker: str, split_ratio: str = None, date: str = None, source: str = None, comments: str = None, tag: str = None, agent: str = None):
-    rsa_data = read_json_data("rsa")
-    past_data = read_json_data("past")
-    all_data = rsa_data + past_data 
-
     if split_ratio is not None and not re.match(r'^1:\d+(\.\d+)?$', split_ratio):
         await ctx.send("Invalid split ratio. Format should be like '1:10'.", ephemeral=True)
         return
 
-    if date is None:
-        date = datetime.now().strftime("%m-%d-%Y")
-    else:
+    if date is not None:
         try:
             parsed_date = datetime.strptime(date, "%m-%d-%Y")
             date = parsed_date.strftime("%m-%d-%Y")
         except ValueError:
             await ctx.send("Invalid date format. Please use 'MM-DD-YYYY'.", ephemeral=True)
             return
+
+    price = await asyncio.to_thread(get_current_price, ticker)
+    if price is not None:
+        price = round(price, 2)
+    else:
+        await ctx.send(f"Failed to fetch price for the ticker: {ticker}. Please try again.", ephemeral=True)
+        return
+
+    rsa_data = read_json_data("rsa")
+    past_data = read_json_data("past")
+    all_data = rsa_data + past_data
 
     for stock in all_data:
         if stock['Ticker'].lower() == ticker.lower():
@@ -563,15 +575,8 @@ async def edit_stock(ctx: SlashContext, ticker: str, split_ratio: str = None, da
             if tag:
                 stock['Tag'] = tag
                 logging.info(f"Status updated for RSA '{ticker}' to '{tag}'. Requested by {ctx.member.display_name}.")
-            price = get_current_price(ticker)
-            if price is not None:
-                price = round(price, 2)
-            else:
-                await ctx.send(f"Failed to fetch price for the ticker: {ticker}. Please try again.", ephemeral=True)
-                return
-                
-            split_ratio_num = float(stock['Split Ratio'].split(":")[1])
-            estimated_profit = round(price * split_ratio_num, 2)
+
+            estimated_profit = calculate_estimated_profit(price, stock['Split Ratio'])
 
             stock['Current Price'] = price
             stock['Estimated Profit'] = estimated_profit
@@ -581,9 +586,6 @@ async def edit_stock(ctx: SlashContext, ticker: str, split_ratio: str = None, da
                 write_json_data("rsa", rsa_data)
             else:
                 write_json_data("past", past_data)
-
-            if not asyncio.get_event_loop().is_running():
-                asyncio.get_event_loop().create_task(update_stock_prices())
 
             await ctx.send(f"Stock '{ticker}' updated successfully.", ephemeral=True)
             return
@@ -678,8 +680,6 @@ async def confirm_stock(ctx: SlashContext, ticker: str, tag: str):
                 past_stock_data.append(removed_stock)
                 write_json_data("rsa", stock_data)
                 write_json_data("past", past_stock_data)
-                if not asyncio.get_event_loop().is_running():
-                    asyncio.get_event_loop().create_task(update_stock_prices())
 
                 logging.info(f"RSA '{ticker}' has been confirmed '{tag}'. Requested by {ctx.member.display_name}.")
                 await ctx.send(f"RSA '{ticker}' has been confirmed '{tag}'.", ephemeral=True)

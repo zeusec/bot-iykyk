@@ -1,10 +1,6 @@
 # Stock Tracking Bot
 This project was built to support a private Discord community. IYKYK, no data is provided in this repo.
 
-No support will be provided, this is provided as-is. I'm not a programmer, if you see a problem fix it and pull request.
-
-Use Issues for new suggestions and issues.
-
 Before installing, be aware this bot uses the Tradier API. You will need an account to run this bot. https://documentation.tradier.com/
 
 All data is stored in `stocks.json`. This is private data and not included in the repo. A template JSON file will be created on first start.
