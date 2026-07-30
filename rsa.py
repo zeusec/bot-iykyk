@@ -6,7 +6,9 @@ import re
 import time
 import os
 import contextlib
-from interactions import Client, OptionType, slash_command, SlashContext, Embed, listen
+import csv
+import io
+from interactions import Client, OptionType, slash_command, SlashContext, Embed, File, listen, Button, ButtonStyle
 from interactions.api.events import Startup
 from interactions.client.errors import LoginError
 from datetime import datetime, date, timedelta
@@ -740,7 +742,34 @@ async def delete_stock(ctx: SlashContext, ticker: str):
     try:
         rsa_data = read_json_data("rsa")
         past_data = read_json_data("past")
+        research_data = read_json_data("research")
+        exists = find_stock(rsa_data, past_data, ticker)[0] is not None or \
+            any(s['Ticker'].lower() == ticker.lower() for s in research_data)
+        if not exists:
+            logging.warning(f"RSA '{ticker}' not found. Requested by {ctx.member.display_name}.")
+            await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+            return
 
+        buttons = [
+            Button(style=ButtonStyle.DANGER, label="Delete", custom_id="delete_yes"),
+            Button(style=ButtonStyle.SECONDARY, label="Cancel", custom_id="delete_no"),
+        ]
+        msg = await ctx.send(
+            f":warning: This permanently removes RSA '{ticker}' - /delete is for mistakes only.\n"
+            f"To clear finished RSAs from the bulletin, use /confirm (ROUNDED/CIL). "
+            f"Anything over a week past its split date is archived automatically.",
+            components=buttons, ephemeral=True)
+        try:
+            used = await ctx.bot.wait_for_component(messages=msg, timeout=60)
+        except asyncio.TimeoutError:
+            await ctx.edit(msg, content=f"Timed out — RSA '{ticker}' was not deleted.", components=[])
+            return
+        if used.ctx.custom_id != "delete_yes":
+            await used.ctx.edit_origin(content=f"Cancelled — RSA '{ticker}' was not deleted.", components=[])
+            return
+
+        rsa_data = read_json_data("rsa")
+        past_data = read_json_data("past")
         stock, array_found_in = find_stock(rsa_data, past_data, ticker)
         stock_found = stock is not None
         if stock_found:
@@ -758,14 +787,73 @@ async def delete_stock(ctx: SlashContext, ticker: str):
 
         if stock_found:
             logging.info(f"RSA '{ticker}' deleted successfully. Requested by {ctx.member.display_name}.")
-            await ctx.send(f"RSA '{ticker}' deleted successfully.", ephemeral=True)
+            await used.ctx.edit_origin(content=f"RSA '{ticker}' deleted successfully.", components=[])
         else:
             logging.warning(f"RSA '{ticker}' not found. Requested by {ctx.member.display_name}.")
-            await ctx.send(f"RSA '{ticker}' not found.", ephemeral=True)
+            await used.ctx.edit_origin(content=f"RSA '{ticker}' not found.", components=[])
 
     except Exception as e:
         logging.error(f"An error occurred while deleting RSA '{ticker}': {e} Requested by {ctx.member.display_name}.")
         await ctx.send(f"An error occurred while deleting RSA '{ticker}'. Please try again.", ephemeral=True)
+
+
+# Export CSV
+@slash_command(
+    name="export",
+    description="Export all RSAs to CSV (only visible to you)",
+    dm_permission=False,
+    options=[
+        {
+            "name": "start",
+            "description": "Earliest split date to include (MM-DD-YYYY)",
+            "type": OptionType.STRING,
+            "required": False
+        },
+        {
+            "name": "end",
+            "description": "Latest split date to include (MM-DD-YYYY)",
+            "type": OptionType.STRING,
+            "required": False
+        }
+    ]
+)
+async def export_stocks(ctx: SlashContext, start: Optional[str] = None, end: Optional[str] = None):
+    try:
+        start_date = datetime.strptime(start, "%m-%d-%Y").date() if start else None
+        end_date = datetime.strptime(end, "%m-%d-%Y").date() if end else None
+    except ValueError:
+        await ctx.send("Invalid date format. Please use 'MM-DD-YYYY'.", ephemeral=True)
+        return
+
+    rows = [(stock, "rsa") for stock in read_json_data("rsa")] + [(stock, "past") for stock in read_json_data("past")]
+    filtered = []
+    for stock, list_name in rows:
+        stock_date = datetime.strptime(stock['Date'], "%m-%d-%Y").date()
+        if start_date and stock_date < start_date:
+            continue
+        if end_date and stock_date > end_date:
+            continue
+        filtered.append((stock_date, stock, list_name))
+
+    if not filtered:
+        await ctx.send(f"Nothing {EMOJI_REDUDE}", ephemeral=True)
+        return
+
+    filtered.sort(key=lambda row: row[0])
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["Ticker", "Split Ratio", "Date", "Current Price", "Estimated Profit", "Tag",
+                     "Transfer Agent", "Source", "Comments", "Brokers Available", "List"])
+    for _, stock, list_name in filtered:
+        brokers_available = ";".join(broker for broker, value in stock['BrokerTracking'].items() if value == 1)
+        writer.writerow([stock['Ticker'], stock['Split Ratio'], stock['Date'], stock['Current Price'],
+                         stock['Estimated Profit'], stock['Tag'], stock['Transfer Agent'], stock['Source'],
+                         stock['Comments'], brokers_available, list_name])
+
+    csv_file = File(io.BytesIO(buffer.getvalue().encode("utf-8")),
+                    file_name=f"rsa_export_{date.today().strftime('%m-%d-%Y')}.csv")
+    await ctx.send(f"{len(filtered)} RSA(s) exported.", file=csv_file, ephemeral=True)
+    logging.info(f"CSV export of {len(filtered)} RSA(s) sent. Requested by {ctx.member.display_name}.")
 
 
 def run_bot():
