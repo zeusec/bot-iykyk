@@ -11,7 +11,7 @@ from interactions.api.events import Startup
 from interactions.client.errors import LoginError
 from datetime import datetime, date
 from typing import Optional
-from secrets import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
+from config import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
 
 TAGS = ["CIL", "ROUNDED", "PENDING"]
 BROKERS = ["Fidelity", "Merrill Edge", "Robinhood", "Schwab", "Tastyworks", 
@@ -92,6 +92,10 @@ except FileNotFoundError:
     write_stocks_json()
     
             
+
+# Discord embed limits: field names max 256 chars, field values max 1024
+def truncate(text, limit):
+    return text[:limit - 3] + "..." if len(text) > limit else text
 
 # Price lookup
 def get_current_price(ticker):
@@ -239,7 +243,7 @@ async def rsa_stock(ctx: SlashContext, ticker: str):
         embed.add_field(name="Date of Split", value=f"`{found_stock['Date']}`", inline=False)
         embed.add_field(name="Estimated Profit", value=f"`{estimated_profit}`", inline=False)
         embed.add_field(name="Shares Availability", value=broker_list, inline=False)
-        embed.add_field(name=found_stock['Comments'] if found_stock['Comments'] else 'Get that bread :money_mouth:', value=f"[Source]({found_stock['Source']})", inline=False)
+        embed.add_field(name=truncate(found_stock['Comments'], 256) if found_stock['Comments'] else 'Get that bread :money_mouth:', value=truncate(f"[Source]({found_stock['Source']})", 1024), inline=False)
 
         await ctx.send(embed=embed, ephemeral=True)
         logging.info(f"RSA '{ticker}' found and sent to Discord. Requested by {ctx.member.display_name}.")
@@ -286,20 +290,13 @@ async def list_stocks(ctx: SlashContext):
             company_name = await asyncio.to_thread(get_company_name, stock['Ticker'])
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             ta_name = f"TA is {stock['Transfer Agent']}" if stock.get('Transfer Agent') else "TA not listed"
-            comment = stock['Comments'][:253] + "..." if len(stock['Comments']) > 256 else stock['Comments']
-            post_text = f"{ticker_name}\nSplit: {stock['Split Ratio']}\nPrice: ${stock['Current Price']}\nProfit: ${stock['Estimated Profit']}\n{stock['Comments'] if stock['Comments'] else 'No comments'}\n{stock['Transfer Agent'] if stock['Transfer Agent'] else 'TA not listed'}\n[Source]({stock['Source']})"
-            character_count = len(post_text)
-            logging.info(f"Character count: {character_count}")
-            if character_count > 2000:
-                await ctx.send("Character limit exceeded. This is a bot issue.", ephemeral=True)
-                logging.error("The post exceeds the character limit. Requested by {ctx.member.display_name}.")
-                return
-            
+            comment = truncate(stock['Comments'], 256) if stock['Comments'] else 'Get that bread :money_mouth:'
+
             embed.add_field(name="\u200b", value=ticker_name, inline=False)
             embed.add_field(name="Split", value=f"\u200b{stock['Split Ratio']}", inline=True)
             embed.add_field(name="Price", value=f"\u200b${stock['Current Price']}", inline=True)
             embed.add_field(name="Profit", value=f"\u200b${stock['Estimated Profit']}", inline=True)
-            embed.add_field(name=comment if stock['Comments'] else 'Get that bread :money_mouth:', value=f"{ta_name}\n[Source]({stock['Source']})", inline=False)
+            embed.add_field(name=comment, value=truncate(f"{ta_name}\n[Source]({stock['Source']})", 1024), inline=False)
 
         logging.info(f"Sending Today's RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed)
@@ -337,17 +334,9 @@ async def list_upcoming_stocks(ctx: SlashContext):
             ticker_name = f"**${stock['Ticker'].upper()}** {company_name}"
             post_text = f"{ticker_name}\nSplit: {stock['Split Ratio']}\nPrice: ${stock['Current Price']}\nEstimated Profit: ${stock['Estimated Profit']}\nDate: {stock['Date']}\nTransfer Agent: {stock['Transfer Agent'] if stock['Transfer Agent'] else 'TA not listed'}"
             if stock['Comments']:
-                post_text += f"\n{stock['Comments']}"
+                post_text += f"\n{truncate(stock['Comments'], 256)}"
             post_text += f"\n[Source]({stock['Source']})"
-            embed.add_field(name="\u200b", value=post_text, inline=False)
-
-        character_count = len(embed.to_dict()["fields"][0]["value"])
-        logging.info(f"Character count: {character_count}")
-
-        if character_count > 2000:
-            await ctx.send("Character limit exceeded. This is a bot issue.", ephemeral=True)
-            logging.error("The post exceeds the character limit. Requested by {ctx.member.display_name}.")
-            return
+            embed.add_field(name="\u200b", value=truncate(post_text, 1024), inline=False)
 
         logging.info(f"Sending Upcoming RSA Bulletin - Page {embed_number + 1}/{total_embeds}")
         await ctx.send(embed=embed, ephemeral=True)

@@ -33,9 +33,9 @@ pip install discord-py-interactions --upgrade
 pip install requests
 ```
 
-### 3. Add secrets.py
+### 3. Add config.py
 ```bash
-nano secrets.py
+nano config.py
 ```
 Paste the following and fill:
 ```bash

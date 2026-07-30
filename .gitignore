@@ -1,5 +1,4 @@
-secrets.py
-secret.py
+config.py
 log.txt
 stocks.json
 venv/
