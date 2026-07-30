@@ -3,7 +3,10 @@ import requests
 import json
 import asyncio
 import re
+import time
+import contextlib
 from interactions import Client, OptionType, slash_command, SlashContext, Embed, EmbedField, EmbedAuthor
+from interactions.client.errors import LoginError
 from datetime import datetime, date
 from typing import Optional
 from secrets import DISCORD_TOKEN, TRADIER_API_KEY, DISCORD_GUILD, DISCORD_CHANN
@@ -43,7 +46,6 @@ EXCH_CODES = {
 EMOJI_REDUDE = '<:9reddude:1126978459940433920>'
 EMOJI_GRDUDE = '<:9greendude:1126978105085546526>'
 
-bot = Client(token=DISCORD_TOKEN)
 JSON_FILE = "stocks.json"
 
 logging.basicConfig(
@@ -738,4 +740,31 @@ async def delete_stock(ctx: SlashContext, ticker: str):
         await ctx.send(f"An error occurred while deleting RSA '{ticker}'. Please try again.", ephemeral=True)
 
 
-bot.start()
+def run_bot():
+    delay = 5
+    while True:
+        bot = Client(token=DISCORD_TOKEN)
+        started = time.monotonic()
+        try:
+            asyncio.run(bot.astart())
+            logging.warning("Disconnected from Discord.")
+        except KeyboardInterrupt:
+            logging.info("Shutting down.")
+            return
+        except LoginError:
+            logging.critical("Discord rejected the bot token, not retrying.", exc_info=True)
+            raise
+        except Exception:
+            logging.error("Could not reach Discord.", exc_info=True)
+        finally:
+            with contextlib.suppress(Exception):
+                asyncio.run(bot.http.close())
+
+        if time.monotonic() - started > 60:
+            delay = 5
+        logging.info(f"Reconnecting in {delay}s.")
+        time.sleep(delay)
+        delay = min(delay * 2, 300)
+
+
+run_bot()
